@@ -30,3 +30,54 @@ func TestInvoiceFlow(t *testing.T) {
 		t.Fatalf("invoice unexpectedly paid")
 	}
 }
+
+func TestCryptoProvider(t *testing.T) {
+	token := os.Getenv("CRYPTOBOT_TOKEN")
+	if token == "" {
+		t.Skip("no token")
+	}
+	b := &Bot{cfg: &config.Config{CryptoBotToken: token}}
+	url, id, err := b.createCryptoInvoice(0.01)
+	if err != nil {
+		t.Fatalf("createCryptoInvoice: %v", err)
+	}
+	if url == "" || id == "" {
+		t.Fatalf("invalid data")
+	}
+	paid, err := b.checkCryptoInvoice(id)
+	if err != nil {
+		t.Fatalf("checkCryptoInvoice: %v", err)
+	}
+	if paid {
+		t.Fatalf("invoice unexpectedly paid")
+	}
+}
+
+func TestXRocketProvider(t *testing.T) {
+	token := os.Getenv("XROCKET_TOKEN")
+	if token == "" {
+		t.Skip("no token")
+	}
+	b := &Bot{cfg: &config.Config{XRocketToken: token}}
+	url, id, err := b.createXRocketInvoice(0.01)
+	if err != nil {
+		t.Fatalf("createXRocketInvoice: %v", err)
+	}
+	if url == "" || id == "" {
+		t.Fatalf("invalid data")
+	}
+	paid, err := b.checkXRocketInvoice(id)
+	if err != nil {
+		t.Fatalf("checkXRocketInvoice: %v", err)
+	}
+	if paid {
+		t.Fatalf("invoice unexpectedly paid")
+	}
+}
+
+func TestInvoiceNoProvider(t *testing.T) {
+	b := &Bot{cfg: &config.Config{}}
+	if _, _, _, err := b.createInvoice(0.01); err == nil {
+		t.Fatalf("expected error")
+	}
+}
