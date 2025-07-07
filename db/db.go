@@ -134,6 +134,18 @@ func (db *DB) GetFileByStorageName(name string) (*models.File, error) {
 	return &f, nil
 }
 
+// GetFileByLink returns a file record by its full link.
+func (db *DB) GetFileByLink(link string) (*models.File, error) {
+	row := db.QueryRow("SELECT id, user_id, local_name, storage_name, link, notify, size FROM files WHERE link=?", link)
+	var f models.File
+	var notify int
+	if err := row.Scan(&f.ID, &f.UserID, &f.LocalName, &f.StorageName, &f.Link, &notify, &f.Size); err != nil {
+		return nil, err
+	}
+	f.Notify = notify == 1
+	return &f, nil
+}
+
 func (db *DB) DeleteFile(id int64) error {
 	_, err := db.Exec("DELETE FROM files WHERE id=?", id)
 	return err

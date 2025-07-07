@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/example/filestoragebot/config"
 	"github.com/example/filestoragebot/db"
@@ -13,22 +14,28 @@ import (
 
 func Start(cfg *config.Config, database *db.DB, notify func(int64, string)) error {
 	handler := func(w http.ResponseWriter, r *http.Request) {
-		name := path.Base(r.URL.Path)
-		if name == "" || name == "." || name == "/" {
+		slug := path.Base(r.URL.Path)
+		if slug == "" || slug == "." || slug == "/" {
 			http.NotFound(w, r)
 			return
 		}
-		fp := filepath.Join(cfg.FileStoragePath, name)
+
+		link := strings.TrimRight(cfg.Domain, "/") + "/" + slug
+		f, err := database.GetFileByLink(link)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		fp := filepath.Join(cfg.FileStoragePath, f.StorageName)
 		if _, err := os.Stat(fp); os.IsNotExist(err) {
 			http.NotFound(w, r)
 			return
 		}
 		http.ServeFile(w, r, fp)
 
-		if f, err := database.GetFileByStorageName(name); err == nil {
-			if f.Notify && notify != nil {
-				notify(f.UserID, "Ваш файл '"+f.LocalName+"' скачан")
-			}
+		if f.Notify && notify != nil {
+			notify(f.UserID, "Ваш файл '"+f.LocalName+"' скачан")
 		}
 	}
 	http.HandleFunc("/", handler)

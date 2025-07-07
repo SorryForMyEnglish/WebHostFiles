@@ -42,8 +42,9 @@ type uploadState struct {
 }
 
 type invoiceState struct {
-	userID int64
-	amount float64
+	userID   int64
+	amount   float64
+	provider string
 }
 
 // Notify sends a message to user by internal DB id.
@@ -140,14 +141,14 @@ func (b *Bot) handleCommand(userID int64, m *tgbotapi.Message) {
 			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Неверная сумма"))
 			return
 		}
-		url, id, err := b.createInvoice(amount)
+		url, id, provider, err := b.createInvoice(amount)
 		if err != nil {
 			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Ошибка создания счёта"))
 			return
 		}
 		b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Оплатите: "+url))
 		// store invoice
-		b.pendingInvoices[id] = &invoiceState{userID: userID, amount: amount}
+		b.pendingInvoices[id] = &invoiceState{userID: userID, amount: amount, provider: provider}
 	case "check":
 		invID := strings.TrimSpace(m.CommandArguments())
 		state, ok := b.pendingInvoices[invID]
@@ -155,7 +156,7 @@ func (b *Bot) handleCommand(userID int64, m *tgbotapi.Message) {
 			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Не найдено"))
 			return
 		}
-		paid, err := b.checkInvoice(invID)
+		paid, err := b.checkInvoice(invID, state.provider)
 		if err != nil {
 			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Ошибка проверки"))
 			return
@@ -270,7 +271,19 @@ func (b *Bot) handleUploadStep(userID int64, st *uploadState, m *tgbotapi.Messag
 	case 3:
 		txt := strings.ToLower(m.Text)
 		st.notify = txt == "да"
-		b.finalizeUpload(userID, st, m.Chat.ID)
+		if err := b.finalizeUpload(userID, st, m.Chat.ID); err != nil {
+			if strings.Contains(err.Error(), "UNIQUE") {
+				st.step = 2
+				msg := tgbotapi.NewMessage(m.Chat.ID, "Ссылка уже занята, введите другую")
+				msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
+				b.api.Send(msg)
+				return
+			}
+			log.Println(err)
+			delete(b.pendingUploads, userID)
+			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Ошибка сохранения"))
+			return
+		}
 		delete(b.pendingUploads, userID)
 		msg := tgbotapi.NewMessage(m.Chat.ID, "Готово")
 		msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
@@ -278,16 +291,16 @@ func (b *Bot) handleUploadStep(userID int64, st *uploadState, m *tgbotapi.Messag
 	}
 }
 
-func (b *Bot) finalizeUpload(userID int64, st *uploadState, chatID int64) {
+func (b *Bot) finalizeUpload(userID int64, st *uploadState, chatID int64) error {
 	url, err := b.api.GetFileDirectURL(st.fileID)
 	if err != nil {
 		log.Println(err)
-		return
+		return err
 	}
 	resp, err := http.Get(url)
 	if err != nil {
 		log.Println(err)
-		return
+		return err
 	}
 	defer resp.Body.Close()
 
@@ -296,12 +309,12 @@ func (b *Bot) finalizeUpload(userID int64, st *uploadState, chatID int64) {
 	out, err := os.Create(path)
 	if err != nil {
 		log.Println(err)
-		return
+		return err
 	}
 	defer out.Close()
 	if _, err := io.Copy(out, resp.Body); err != nil {
 		log.Println(err)
-		return
+		return err
 	}
 
 	link := strings.TrimRight(b.cfg.Domain, "/") + "/" + st.link
@@ -315,7 +328,7 @@ func (b *Bot) finalizeUpload(userID int64, st *uploadState, chatID int64) {
 	}
 	if err := b.db.AddFile(f); err != nil {
 		log.Println(err)
-		return
+		return err
 	}
 
 	if err := b.db.AdjustBalance(userID, -st.cost); err != nil {
@@ -323,12 +336,22 @@ func (b *Bot) finalizeUpload(userID int64, st *uploadState, chatID int64) {
 	}
 
 	b.api.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Файл сохранён: %s", link)))
+	return nil
 }
 
-func (b *Bot) createInvoice(amount float64) (string, string, error) {
-	if b.cfg.CryptoBotToken == "" {
-		return "", "", fmt.Errorf("нет токена CryptoBot")
+func (b *Bot) createInvoice(amount float64) (string, string, string, error) {
+	if b.cfg.CryptoBotToken != "" {
+		url, id, err := b.createCryptoInvoice(amount)
+		return url, id, "crypto", err
 	}
+	if b.cfg.XRocketToken != "" {
+		url, id, err := b.createXRocketInvoice(amount)
+		return url, id, "xrocket", err
+	}
+	return "", "", "", fmt.Errorf("нет провайдера оплаты")
+}
+
+func (b *Bot) createCryptoInvoice(amount float64) (string, string, error) {
 	values := url.Values{}
 	values.Set("asset", "USDT")
 	values.Set("amount", fmt.Sprintf("%.2f", amount))
@@ -360,10 +383,49 @@ func (b *Bot) createInvoice(amount float64) (string, string, error) {
 	return r.Result.PayURL, r.Result.InvoiceID, nil
 }
 
-func (b *Bot) checkInvoice(id string) (bool, error) {
-	if b.cfg.CryptoBotToken == "" {
-		return false, fmt.Errorf("нет токена")
+func (b *Bot) createXRocketInvoice(amount float64) (string, string, error) {
+	values := url.Values{}
+	values.Set("currency", "USDT")
+	values.Set("amount", fmt.Sprintf("%.2f", amount))
+	req, err := http.NewRequest("POST", "https://api.xrocket.app/v1/createInvoice", strings.NewReader(values.Encode()))
+	if err != nil {
+		return "", "", err
 	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("XRocket-Token", b.cfg.XRocketToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	type res struct {
+		Ok     bool `json:"ok"`
+		Result struct {
+			ID  string `json:"id"`
+			URL string `json:"url"`
+		} `json:"result"`
+	}
+	var r res
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return "", "", err
+	}
+	if !r.Ok {
+		return "", "", fmt.Errorf("api error")
+	}
+	return r.Result.URL, r.Result.ID, nil
+}
+
+func (b *Bot) checkInvoice(id, provider string) (bool, error) {
+	if provider == "crypto" && b.cfg.CryptoBotToken != "" {
+		return b.checkCryptoInvoice(id)
+	}
+	if provider == "xrocket" && b.cfg.XRocketToken != "" {
+		return b.checkXRocketInvoice(id)
+	}
+	return false, fmt.Errorf("нет провайдера")
+}
+
+func (b *Bot) checkCryptoInvoice(id string) (bool, error) {
 	urlStr := "https://pay.crypt.bot/api/getInvoices?invoice_ids=" + id
 	req, err := http.NewRequest("GET", urlStr, nil)
 	if err != nil {
@@ -389,6 +451,34 @@ func (b *Bot) checkInvoice(id string) (bool, error) {
 		return false, fmt.Errorf("api error")
 	}
 	return r.Result[0].Status == "paid", nil
+}
+
+func (b *Bot) checkXRocketInvoice(id string) (bool, error) {
+	urlStr := "https://api.xrocket.app/v1/invoiceStatus?id=" + id
+	req, err := http.NewRequest("GET", urlStr, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("XRocket-Token", b.cfg.XRocketToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	type res struct {
+		Ok     bool `json:"ok"`
+		Result struct {
+			Status string `json:"status"`
+		} `json:"result"`
+	}
+	var r res
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return false, err
+	}
+	if !r.Ok {
+		return false, fmt.Errorf("api error")
+	}
+	return r.Result.Status == "paid", nil
 }
 
 func (b *Bot) handleCallback(q *tgbotapi.CallbackQuery) {
