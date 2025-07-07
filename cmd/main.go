@@ -1,0 +1,37 @@
+package main
+
+import (
+	"log"
+
+	"github.com/example/filestoragebot/bot"
+	"github.com/example/filestoragebot/config"
+	"github.com/example/filestoragebot/db"
+	"github.com/example/filestoragebot/server"
+)
+
+func main() {
+	cfg, err := config.Ensure("config.yml")
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+
+	database, err := db.New(cfg.DatabasePath)
+	if err != nil {
+		log.Fatalf("database: %v", err)
+	}
+
+	b, err := bot.New(cfg, database)
+	if err != nil {
+		log.Fatalf("bot: %v", err)
+	}
+
+	go func() {
+		if err := server.Start(cfg, database, func(id int64, msg string) {
+			_ = b.Notify(id, msg)
+		}); err != nil {
+			log.Fatalf("server: %v", err)
+		}
+	}()
+
+	b.Start()
+}
