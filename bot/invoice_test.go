@@ -81,3 +81,18 @@ func TestInvoiceNoProvider(t *testing.T) {
 		t.Fatalf("expected error")
 	}
 }
+
+func TestCheckCryptoInvoicePaid(t *testing.T) {
+	token := os.Getenv("CRYPTOBOT_TOKEN")
+	if token == "" {
+		t.Skip("no token")
+	}
+	b := &Bot{cfg: &config.Config{CryptoBotToken: token}}
+	paid, err := b.checkCryptoInvoice("29102258")
+	if err != nil {
+		t.Fatalf("checkCryptoInvoice: %v", err)
+	}
+	if !paid {
+		t.Fatalf("expected invoice to be paid")
+	}
+}
