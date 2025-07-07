@@ -137,6 +137,17 @@ func (db *DB) GetFileByStorageName(name string) (*models.File, error) {
 	return &f, nil
 }
 
+func (db *DB) GetFileByLocalName(userID int64, local string) (*models.File, error) {
+	row := db.QueryRow("SELECT id, user_id, local_name, storage_name, link, notify, size, created_at FROM files WHERE user_id=? AND local_name=?", userID, local)
+	var f models.File
+	var notify int
+	if err := row.Scan(&f.ID, &f.UserID, &f.LocalName, &f.StorageName, &f.Link, &notify, &f.Size, &f.CreatedAt); err != nil {
+		return nil, err
+	}
+	f.Notify = notify == 1
+	return &f, nil
+}
+
 // GetFileByLink returns a file record by its full link.
 func (db *DB) GetFileByLink(link string) (*models.File, error) {
 	row := db.QueryRow("SELECT id, user_id, local_name, storage_name, link, notify, size, created_at FROM files WHERE link=?", link)

@@ -1,49 +1,42 @@
-# Telegram File Storage Bot
+# Телеграм бот хранения файлов
 
-This project provides a basic Telegram bot for storing user files with a pay-per-upload model. It is written in Go and uses SQLite for storage.
+Проект представляет собой простого Telegram-бота, написанного на Go, для хранения файлов пользователей на платной основе. Все данные сохраняются в SQLite.
 
-Features include:
+## Возможности
 
-- Receiving documents from users via Telegram.
-- Automatic generation of a configuration file on first run.
-- Limiting file size with optional paid extra space.
-- SQLite database to track users, balances and stored files.
-- Управление ботом происходит через меню с кнопками.
-- Built-in HTTP/HTTPS server to serve files with optional download notifications.
+- Приём документов от пользователей.
+- Автоматическое создание файла конфигурации при первом запуске.
+- Ограничение размера файла и возможность оплатить дополнительное место.
+- База данных SQLite для учёта пользователей, баланса и файлов.
+- Управление ботом через клавиатуру снизу.
+- Встроенный HTTP/HTTPS сервер для выдачи файлов и уведомлений о скачивании.
 
-Payment integration with CryptoBot and xRocket can be enabled by filling the tokens in `config.yml`. By default uploading a file costs `price_upload` and removing it refunds `price_refund` back to the user balance.
+Интеграция с CryptoBot и xRocket активируется при указании токенов в `config.yml`. По умолчанию стоимость загрузки задаётся параметром `price_upload`, а возврат при удалении файла — `price_refund`.
 
-## Building
+## Сборка
 
 ```bash
 go build -o filestorage ./cmd
 ```
 
-Run the binary and fill in required tokens inside `config.yml` before using the bot.
-Important fields include:
+При первом запуске бинарник создаст `config.yml`. Заполните в нём необходимые токены и параметры перед использованием бота.
+Основные поля:
 
-- `domain` - base URL used for links sent to users
-- `http_address` - address for the built-in file server (default `:8080`)
- - `tls_cert` and `tls_key` - paths to certificate and key for HTTPS. When set, the file server will use TLS.
-- `admin_id` - Telegram ID администратора с доступом к админ‑панели
-- `price_upload` - cost of storing one file
-- `price_refund` - refund when a file is deleted
+- `domain` — базовый URL для ссылок.
+- `http_address` — адрес встроенного файлового сервера (по умолчанию `:8080`).
+- `tls_cert`, `tls_key` — пути к сертификату и ключу для HTTPS.
+- `admin_id` — Telegram ID администратора.
+- `price_upload` — стоимость загрузки файла.
+- `price_refund` — возврат при удалении файла.
 
-Only this configuration file is stored outside the compiled binary.
-Example: `./filestorage` will start an HTTP server. To enable HTTPS run with certificates and set `domain` to https URL.
+Пример запуска `./filestorage` поднимет HTTP сервер. Для работы через HTTPS задайте сертификаты и `domain` с `https://`.
 
 ## Настройка HTTPS
 
-Для работы через TLS необходимо сгенерировать сертификат и приватный ключ,
-а затем указать пути к ним в полях `tls_cert` и `tls_key` файла `config.yml`.
-Пример создания самоподписанного сертификата с помощью `openssl`:
+Для работы через TLS сгенерируйте сертификат и приватный ключ и пропишите их пути в `config.yml`. Пример создания самоподписанного сертификата:
 
 ```bash
 openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
 ```
 
-Полученные `cert.pem` и `key.pem` разместите в удобном месте и пропишите их пути
-в конфигурации. После перезапуска бот будет обслуживать файлы по HTTPS.
-
-Также в конфигурации появился параметр `admin_id` – Telegram ID администратора,
-которому будет доступна админ‑панель бота.
+После перезапуска бот начнёт обслуживать файлы по HTTPS. Параметр `admin_id` предоставляет доступ к админ‑панели.
