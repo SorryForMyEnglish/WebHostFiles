@@ -27,6 +27,8 @@ type Bot struct {
 	pendingUploads  map[int64]*uploadState
 	changeLink      map[int64]string
 	pendingInvoices map[string]*invoiceState
+	topupRequest    map[int64]bool
+	adminAction     map[int64]string
 }
 
 type uploadState struct {
@@ -70,6 +72,8 @@ func New(cfg *config.Config, db *db.DB) (*Bot, error) {
 		pendingUploads:  make(map[int64]*uploadState),
 		changeLink:      make(map[int64]string),
 		pendingInvoices: make(map[string]*invoiceState),
+		topupRequest:    make(map[int64]bool),
+		adminAction:     make(map[int64]string),
 	}, nil
 }
 
@@ -93,6 +97,14 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 	userID, err := b.db.GetOrCreateUser(m.From.ID)
 	if err != nil {
 		log.Println("db:", err)
+		return
+	}
+	if b.topupRequest[userID] && !m.IsCommand() && m.Document == nil {
+		b.processTopup(userID, m)
+		return
+	}
+	if act, ok := b.adminAction[userID]; ok && !m.IsCommand() && m.Document == nil {
+		b.handleAdminInput(userID, act, m)
 		return
 	}
 	if m.IsCommand() {
@@ -119,94 +131,9 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 func (b *Bot) handleCommand(userID int64, m *tgbotapi.Message) {
 	switch m.Command() {
 	case "start":
-		msg := tgbotapi.NewMessage(m.Chat.ID, "Welcome to FileStorageBot")
-		b.api.Send(msg)
-	case "balance":
-		bal, err := b.db.GetBalance(userID)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		msg := tgbotapi.NewMessage(m.Chat.ID, fmt.Sprintf("Ваш баланс: %.2f", bal))
-		b.api.Send(msg)
-	case "topup":
-		amountStr := strings.TrimSpace(m.CommandArguments())
-		if amountStr == "" {
-			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Укажите сумму"))
-			return
-		}
-		var amount float64
-		fmt.Sscanf(amountStr, "%f", &amount)
-		if amount <= 0 {
-			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Неверная сумма"))
-			return
-		}
-		url, id, provider, err := b.createInvoice(amount)
-		if err != nil {
-			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Ошибка создания счёта"))
-			return
-		}
-		b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Оплатите: "+url))
-		// store invoice
-		b.pendingInvoices[id] = &invoiceState{userID: userID, amount: amount, provider: provider}
-	case "check":
-		invID := strings.TrimSpace(m.CommandArguments())
-		state, ok := b.pendingInvoices[invID]
-		if !ok || state.userID != userID {
-			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Не найдено"))
-			return
-		}
-		paid, err := b.checkInvoice(invID, state.provider)
-		if err != nil {
-			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Ошибка проверки"))
-			return
-		}
-		if paid {
-			b.db.AdjustBalance(userID, state.amount)
-			b.db.AddPayment(userID, state.amount)
-			delete(b.pendingInvoices, invID)
-			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Оплата получена"))
-		} else {
-			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Не оплачено"))
-		}
-	case "files":
-		files, err := b.db.ListFiles(userID)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		if len(files) == 0 {
-			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Файлов нет"))
-			return
-		}
-		var rows [][]tgbotapi.InlineKeyboardButton
-		for _, f := range files {
-			btn := tgbotapi.NewInlineKeyboardButtonData(f.LocalName, "manage:"+f.StorageName)
-			rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn))
-		}
-		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-		msg := tgbotapi.NewMessage(m.Chat.ID, "Ваши файлы")
-		msg.ReplyMarkup = &kb
-		b.api.Send(msg)
-	case "delete":
-		if len(m.CommandArguments()) == 0 {
-			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Укажите имя файла"))
-			return
-		}
-		name := m.CommandArguments()
-		f, err := b.db.GetFileByStorageName(name)
-		if err != nil {
-			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Файл не найден"))
-			return
-		}
-		if f.UserID != userID {
-			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Нет доступа"))
-			return
-		}
-		os.Remove(filepath.Join(b.cfg.FileStoragePath, f.StorageName))
-		b.db.DeleteFile(f.ID)
-		b.db.AdjustBalance(userID, b.cfg.PriceRefund)
-		b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Файл удалён"))
+		b.sendMainMenu(m.Chat.ID, userID, m.From.ID == b.cfg.AdminID)
+	case "help":
+		b.sendMainMenu(m.Chat.ID, userID, m.From.ID == b.cfg.AdminID)
 	}
 }
 
@@ -483,16 +410,106 @@ func (b *Bot) checkXRocketInvoice(id string) (bool, error) {
 
 func (b *Bot) handleCallback(q *tgbotapi.CallbackQuery) {
 	parts := strings.SplitN(q.Data, ":", 2)
-	if len(parts) != 2 {
-		return
+	action := parts[0]
+	arg := ""
+	if len(parts) == 2 {
+		arg = parts[1]
 	}
-	action, arg := parts[0], parts[1]
 	userID, err := b.db.GetOrCreateUser(q.From.ID)
 	if err != nil {
 		log.Println(err)
 		return
 	}
 	switch action {
+	case "myfiles":
+		files, err := b.db.ListFiles(userID)
+		if err != nil || len(files) == 0 {
+			b.api.Send(tgbotapi.NewMessage(q.Message.Chat.ID, "Файлов нет"))
+			return
+		}
+		var rows [][]tgbotapi.InlineKeyboardButton
+		for _, f := range files {
+			btn := tgbotapi.NewInlineKeyboardButtonData(f.LocalName, "manage:"+f.StorageName)
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn))
+		}
+		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "Ваши файлы")
+		msg.ReplyMarkup = &kb
+		b.api.Send(msg)
+	case "topup":
+		b.topupRequest[userID] = true
+		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "Введите сумму")
+		msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
+		b.api.Send(msg)
+	case "checkpay":
+		state, ok := b.pendingInvoices[arg]
+		if !ok || state.userID != userID {
+			b.api.Send(tgbotapi.NewCallback(q.ID, "Не найдено"))
+			return
+		}
+		paid, err := b.checkInvoice(arg, state.provider)
+		if err != nil {
+			b.api.Send(tgbotapi.NewCallback(q.ID, "Ошибка"))
+			return
+		}
+		if paid {
+			b.db.AdjustBalance(userID, state.amount)
+			b.db.AddPayment(userID, state.amount)
+			delete(b.pendingInvoices, arg)
+			b.api.Send(tgbotapi.NewCallback(q.ID, "Оплачено"))
+		} else {
+			b.api.Send(tgbotapi.NewCallback(q.ID, "Не оплачено"))
+		}
+	case "admin":
+		if q.From.ID != b.cfg.AdminID {
+			return
+		}
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Инфо о пользователе", "a_userinfo"),
+				tgbotapi.NewInlineKeyboardButtonData("Изменить баланс", "a_balance"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Список файлов", "a_files"),
+			),
+		)
+		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "Админ панель")
+		msg.ReplyMarkup = kb
+		b.api.Send(msg)
+	case "a_userinfo":
+		if q.From.ID != b.cfg.AdminID {
+			return
+		}
+		b.adminAction[userID] = "userinfo"
+		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "Введите telegram id")
+		msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
+		b.api.Send(msg)
+	case "a_balance":
+		if q.From.ID != b.cfg.AdminID {
+			return
+		}
+		b.adminAction[userID] = "balance"
+		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "Введите telegram id и сумму через пробел")
+		msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
+		b.api.Send(msg)
+	case "a_files":
+		if q.From.ID != b.cfg.AdminID {
+			return
+		}
+		files, err := b.db.ListAllFiles()
+		if err != nil || len(files) == 0 {
+			b.api.Send(tgbotapi.NewMessage(q.Message.Chat.ID, "Файлов нет"))
+			return
+		}
+		var sb strings.Builder
+		for _, f := range files {
+			notif := "выкл"
+			if f.Notify {
+				notif = "вкл"
+			}
+			sb.WriteString(fmt.Sprintf("%s | %s | %s\n", f.CreatedAt, notif, f.Link))
+		}
+		b.api.Send(tgbotapi.NewMessage(q.Message.Chat.ID, sb.String()))
 	case "manage":
 		f, err := b.db.GetFileByStorageName(arg)
 		if err != nil || f.UserID != userID {
@@ -550,4 +567,74 @@ func (b *Bot) finishChangeLink(userID int64, name string, m *tgbotapi.Message) {
 		b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Ссылка изменена: "+link))
 	}
 	delete(b.changeLink, userID)
+}
+
+func (b *Bot) sendMainMenu(chatID, userID int64, isAdmin bool) {
+	rows := [][]tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Мои файлы", "myfiles")),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Пополнить счёт", "topup")),
+	}
+	if isAdmin {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Админ панель", "admin")))
+	}
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	bal, _ := b.db.GetBalance(userID)
+	txt := fmt.Sprintf("Ваш баланс: %.2f\nВыберите действие:", bal)
+	msg := tgbotapi.NewMessage(chatID, txt)
+	msg.ReplyMarkup = kb
+	b.api.Send(msg)
+}
+
+func (b *Bot) processTopup(userID int64, m *tgbotapi.Message) {
+	amountStr := strings.TrimSpace(m.Text)
+	var amount float64
+	fmt.Sscanf(amountStr, "%f", &amount)
+	if amount <= 0 {
+		b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Неверная сумма"))
+		delete(b.topupRequest, userID)
+		return
+	}
+	url, id, provider, err := b.createInvoice(amount)
+	if err != nil {
+		b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Ошибка создания счёта"))
+		delete(b.topupRequest, userID)
+		return
+	}
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Проверить оплату", "checkpay:"+id)),
+	)
+	msg := tgbotapi.NewMessage(m.Chat.ID, "Оплатите: "+url)
+	msg.ReplyMarkup = kb
+	b.api.Send(msg)
+	b.pendingInvoices[id] = &invoiceState{userID: userID, amount: amount, provider: provider}
+	delete(b.topupRequest, userID)
+}
+
+func (b *Bot) handleAdminInput(userID int64, act string, m *tgbotapi.Message) {
+	switch act {
+	case "userinfo":
+		var tg int64
+		fmt.Sscanf(m.Text, "%d", &tg)
+		row := b.db.QueryRow("SELECT id, balance FROM users WHERE telegram_id=?", tg)
+		var id int64
+		var bal float64
+		if err := row.Scan(&id, &bal); err != nil {
+			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Пользователь не найден"))
+		} else {
+			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, fmt.Sprintf("ID: %d\nБаланс: %.2f", id, bal)))
+		}
+	case "balance":
+		var tg int64
+		var delta float64
+		fmt.Sscanf(m.Text, "%d %f", &tg, &delta)
+		row := b.db.QueryRow("SELECT id FROM users WHERE telegram_id=?", tg)
+		var id int64
+		if err := row.Scan(&id); err != nil {
+			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Пользователь не найден"))
+		} else {
+			b.db.AdjustBalance(id, delta)
+			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Баланс изменён"))
+		}
+	}
+	delete(b.adminAction, userID)
 }

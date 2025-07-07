@@ -37,7 +37,8 @@ func migrate(db *sql.DB) error {
                         storage_name TEXT,
                         link TEXT UNIQUE,
                         notify INTEGER DEFAULT 0,
-                        size INTEGER
+                        size INTEGER,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );`,
 		`CREATE TABLE IF NOT EXISTS payments(
                         id INTEGER PRIMARY KEY,
@@ -51,6 +52,8 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	// ensure created_at column exists in older databases
+	db.Exec("ALTER TABLE files ADD COLUMN created_at TIMESTAMP")
 	return nil
 }
 
@@ -105,7 +108,7 @@ func boolToInt(b bool) int {
 }
 
 func (db *DB) ListFiles(userID int64) ([]models.File, error) {
-	rows, err := db.Query("SELECT id, user_id, local_name, storage_name, link, notify, size FROM files WHERE user_id=?", userID)
+	rows, err := db.Query("SELECT id, user_id, local_name, storage_name, link, notify, size, created_at FROM files WHERE user_id=?", userID)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +117,7 @@ func (db *DB) ListFiles(userID int64) ([]models.File, error) {
 	for rows.Next() {
 		var f models.File
 		var notify int
-		if err := rows.Scan(&f.ID, &f.UserID, &f.LocalName, &f.StorageName, &f.Link, &notify, &f.Size); err != nil {
+		if err := rows.Scan(&f.ID, &f.UserID, &f.LocalName, &f.StorageName, &f.Link, &notify, &f.Size, &f.CreatedAt); err != nil {
 			return nil, err
 		}
 		f.Notify = notify == 1
@@ -124,10 +127,10 @@ func (db *DB) ListFiles(userID int64) ([]models.File, error) {
 }
 
 func (db *DB) GetFileByStorageName(name string) (*models.File, error) {
-	row := db.QueryRow("SELECT id, user_id, local_name, storage_name, link, notify, size FROM files WHERE storage_name=?", name)
+	row := db.QueryRow("SELECT id, user_id, local_name, storage_name, link, notify, size, created_at FROM files WHERE storage_name=?", name)
 	var f models.File
 	var notify int
-	if err := row.Scan(&f.ID, &f.UserID, &f.LocalName, &f.StorageName, &f.Link, &notify, &f.Size); err != nil {
+	if err := row.Scan(&f.ID, &f.UserID, &f.LocalName, &f.StorageName, &f.Link, &notify, &f.Size, &f.CreatedAt); err != nil {
 		return nil, err
 	}
 	f.Notify = notify == 1
@@ -136,10 +139,10 @@ func (db *DB) GetFileByStorageName(name string) (*models.File, error) {
 
 // GetFileByLink returns a file record by its full link.
 func (db *DB) GetFileByLink(link string) (*models.File, error) {
-	row := db.QueryRow("SELECT id, user_id, local_name, storage_name, link, notify, size FROM files WHERE link=?", link)
+	row := db.QueryRow("SELECT id, user_id, local_name, storage_name, link, notify, size, created_at FROM files WHERE link=?", link)
 	var f models.File
 	var notify int
-	if err := row.Scan(&f.ID, &f.UserID, &f.LocalName, &f.StorageName, &f.Link, &notify, &f.Size); err != nil {
+	if err := row.Scan(&f.ID, &f.UserID, &f.LocalName, &f.StorageName, &f.Link, &notify, &f.Size, &f.CreatedAt); err != nil {
 		return nil, err
 	}
 	f.Notify = notify == 1
@@ -160,4 +163,23 @@ func (db *DB) GetTelegramID(userID int64) (int64, error) {
 	var tg int64
 	err := db.QueryRow("SELECT telegram_id FROM users WHERE id=?", userID).Scan(&tg)
 	return tg, err
+}
+
+func (db *DB) ListAllFiles() ([]models.File, error) {
+	rows, err := db.Query("SELECT id, user_id, local_name, storage_name, link, notify, size, created_at FROM files")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var files []models.File
+	for rows.Next() {
+		var f models.File
+		var notify int
+		if err := rows.Scan(&f.ID, &f.UserID, &f.LocalName, &f.StorageName, &f.Link, &notify, &f.Size, &f.CreatedAt); err != nil {
+			return nil, err
+		}
+		f.Notify = notify == 1
+		files = append(files, f)
+	}
+	return files, rows.Err()
 }

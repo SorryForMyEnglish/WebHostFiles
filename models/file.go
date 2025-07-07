@@ -8,4 +8,5 @@ type File struct {
 	Link        string
 	Notify      bool
 	Size        int64
+	CreatedAt   string
 }
