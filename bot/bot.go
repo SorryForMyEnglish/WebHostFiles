@@ -397,8 +397,8 @@ func (b *Bot) createCryptoInvoice(amount float64) (string, string, error) {
 	type res struct {
 		Ok     bool `json:"ok"`
 		Result struct {
-			InvoiceID string `json:"invoice_id"`
-			PayURL    string `json:"pay_url"`
+			InvoiceID json.Number `json:"invoice_id"`
+			PayURL    string      `json:"pay_url"`
 		} `json:"result"`
 	}
 	var r res
@@ -408,12 +408,12 @@ func (b *Bot) createCryptoInvoice(amount float64) (string, string, error) {
 	if !r.Ok {
 		return "", "", fmt.Errorf("CryptoBot API error: %s", string(data))
 	}
-	return r.Result.PayURL, r.Result.InvoiceID, nil
+	return r.Result.PayURL, r.Result.InvoiceID.String(), nil
 }
 
 func (b *Bot) createXRocketInvoice(amount float64) (string, string, error) {
-	body := fmt.Sprintf(`{"amount":%.2f,"minPayment":%.2f,"numPayments":1,"currency":"USDT","description":"Account top-up"}`,
-		amount, amount)
+	body := fmt.Sprintf(`{"amount":%.2f,"numPayments":1,"currency":"USDT","description":"Account top-up"}`,
+		amount)
 	req, err := http.NewRequest("POST", "https://pay.xrocket.tg/tg-invoices", strings.NewReader(body))
 	if err != nil {
 		return "", "", err
