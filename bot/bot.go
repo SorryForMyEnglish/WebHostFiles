@@ -27,8 +27,9 @@ type Bot struct {
 	pendingUploads  map[int64]*uploadState
 	changeLink      map[int64]string
 	pendingInvoices map[string]*invoiceState
-	topupRequest    map[int64]bool
+	pendingTopup    map[int64]*topupState
 	adminAction     map[int64]string
+	filePage        map[int64]int
 }
 
 type uploadState struct {
@@ -45,6 +46,12 @@ type uploadState struct {
 
 type invoiceState struct {
 	userID   int64
+	amount   float64
+	provider string
+}
+
+type topupState struct {
+	step     int
 	amount   float64
 	provider string
 }
@@ -72,8 +79,9 @@ func New(cfg *config.Config, db *db.DB) (*Bot, error) {
 		pendingUploads:  make(map[int64]*uploadState),
 		changeLink:      make(map[int64]string),
 		pendingInvoices: make(map[string]*invoiceState),
-		topupRequest:    make(map[int64]bool),
+		pendingTopup:    make(map[int64]*topupState),
 		adminAction:     make(map[int64]string),
+		filePage:        make(map[int64]int),
 	}, nil
 }
 
@@ -99,8 +107,8 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 		log.Println("db:", err)
 		return
 	}
-	if b.topupRequest[userID] && !m.IsCommand() && m.Document == nil {
-		b.processTopup(userID, m)
+	if st, ok := b.pendingTopup[userID]; ok && !m.IsCommand() && m.Document == nil {
+		b.processTopup(userID, m, st)
 		return
 	}
 	if act, ok := b.adminAction[userID]; ok && !m.IsCommand() && m.Document == nil {
@@ -124,6 +132,68 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 
 	if m.Document != nil {
 		b.handleDocument(userID, m)
+		return
+	}
+
+	switch m.Text {
+	case "\xF0\x9F\x93\x82 Мои файлы":
+		b.filePage[userID] = 0
+		b.sendFileList(userID, m.Chat.ID, 0)
+		return
+	case "\xF0\x9F\x92\xB0 Пополнить счёт":
+		b.pendingTopup[userID] = &topupState{step: 1}
+		msg := tgbotapi.NewMessage(m.Chat.ID, "\xF0\x9F\x92\xB0 Введите сумму")
+		msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
+		b.api.Send(msg)
+		return
+	case "\xE2\x9A\x99\xEF\xB8\x8F Админ панель":
+		if m.From.ID == b.cfg.AdminID {
+			kb := tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("Инфо о пользователе", "a_userinfo"),
+					tgbotapi.NewInlineKeyboardButtonData("Изменить баланс", "a_balance"),
+				),
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("Список файлов", "a_files"),
+				),
+			)
+			msg := tgbotapi.NewMessage(m.Chat.ID, "Админ панель")
+			msg.ReplyMarkup = kb
+			b.api.Send(msg)
+		}
+		return
+	case "↩️ Назад":
+		b.sendMainMenu(m.Chat.ID, userID, m.From.ID == b.cfg.AdminID)
+		return
+	case "⬅️":
+		if p, ok := b.filePage[userID]; ok {
+			if p > 0 {
+				p--
+			}
+			b.filePage[userID] = p
+			b.sendFileList(userID, m.Chat.ID, p)
+		}
+		return
+	case "➡️":
+		if p, ok := b.filePage[userID]; ok {
+			p++
+			b.filePage[userID] = p
+			b.sendFileList(userID, m.Chat.ID, p)
+		}
+		return
+	}
+
+	if f, err := b.db.GetFileByLocalName(userID, m.Text); err == nil {
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🔗 Сменить ссылку", "link:"+f.StorageName),
+				tgbotapi.NewInlineKeyboardButtonData("🔔 Уведомления", "notify:"+f.StorageName),
+				tgbotapi.NewInlineKeyboardButtonData("❌ Удалить", "delete:"+f.StorageName),
+			),
+		)
+		msg := tgbotapi.NewMessage(m.Chat.ID, f.LocalName+" -> "+f.Link)
+		msg.ReplyMarkup = kb
+		b.api.Send(msg)
 		return
 	}
 }
@@ -278,6 +348,25 @@ func (b *Bot) createInvoice(amount float64) (string, string, string, error) {
 	return "", "", "", fmt.Errorf("нет провайдера оплаты")
 }
 
+func (b *Bot) createInvoiceProvider(amount float64, provider string) (string, string, string, error) {
+	switch provider {
+	case "crypto":
+		if b.cfg.CryptoBotToken == "" {
+			return "", "", "", fmt.Errorf("provider disabled")
+		}
+		url, id, err := b.createCryptoInvoice(amount)
+		return url, id, "crypto", err
+	case "xrocket":
+		if b.cfg.XRocketToken == "" {
+			return "", "", "", fmt.Errorf("provider disabled")
+		}
+		url, id, err := b.createXRocketInvoice(amount)
+		return url, id, "xrocket", err
+	default:
+		return b.createInvoice(amount)
+	}
+}
+
 func (b *Bot) createCryptoInvoice(amount float64) (string, string, error) {
 	values := url.Values{}
 	values.Set("asset", "USDT")
@@ -424,7 +513,7 @@ func (b *Bot) handleCallback(q *tgbotapi.CallbackQuery) {
 	case "myfiles":
 		files, err := b.db.ListFiles(userID)
 		if err != nil || len(files) == 0 {
-			b.api.Send(tgbotapi.NewMessage(q.Message.Chat.ID, "Файлов нет"))
+			b.api.Send(tgbotapi.NewCallback(q.ID, "Файлов нет"))
 			return
 		}
 		var rows [][]tgbotapi.InlineKeyboardButton
@@ -437,8 +526,8 @@ func (b *Bot) handleCallback(q *tgbotapi.CallbackQuery) {
 		msg.ReplyMarkup = &kb
 		b.api.Send(msg)
 	case "topup":
-		b.topupRequest[userID] = true
-		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "Введите сумму")
+		b.pendingTopup[userID] = &topupState{step: 1}
+		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "\xF0\x9F\x92\xB0 Введите сумму")
 		msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
 		b.api.Send(msg)
 	case "checkpay":
@@ -570,44 +659,140 @@ func (b *Bot) finishChangeLink(userID int64, name string, m *tgbotapi.Message) {
 }
 
 func (b *Bot) sendMainMenu(chatID, userID int64, isAdmin bool) {
-	rows := [][]tgbotapi.InlineKeyboardButton{
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Мои файлы", "myfiles")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Пополнить счёт", "topup")),
+	rows := [][]tgbotapi.KeyboardButton{
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("\xF0\x9F\x93\x82 Мои файлы"),
+			tgbotapi.NewKeyboardButton("\xF0\x9F\x92\xB0 Пополнить счёт"),
+		),
 	}
 	if isAdmin {
-		rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Админ панель", "admin")))
+		rows = append(rows, tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("\xE2\x9A\x99\xEF\xB8\x8F Админ панель"),
+		))
 	}
-	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	kb := tgbotapi.NewReplyKeyboard(rows...)
 	bal, _ := b.db.GetBalance(userID)
-	txt := fmt.Sprintf("Ваш баланс: %.2f\nВыберите действие:", bal)
+	txt := fmt.Sprintf("\xF0\x9F\x92\xB0 Ваш баланс: %.2f\nВыберите действие:", bal)
 	msg := tgbotapi.NewMessage(chatID, txt)
 	msg.ReplyMarkup = kb
 	b.api.Send(msg)
 }
 
-func (b *Bot) processTopup(userID int64, m *tgbotapi.Message) {
-	amountStr := strings.TrimSpace(m.Text)
-	var amount float64
-	fmt.Sscanf(amountStr, "%f", &amount)
-	if amount <= 0 {
-		b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Неверная сумма"))
-		delete(b.topupRequest, userID)
-		return
+func (b *Bot) processTopup(userID int64, m *tgbotapi.Message, st *topupState) {
+	if st.step == 1 {
+		amountStr := strings.TrimSpace(m.Text)
+		var amount float64
+		fmt.Sscanf(amountStr, "%f", &amount)
+		if amount <= 0 {
+			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Неверная сумма"))
+			delete(b.pendingTopup, userID)
+			return
+		}
+		st.amount = amount
+		if b.cfg.CryptoBotToken != "" && b.cfg.XRocketToken != "" {
+			st.step = 2
+			kb := tgbotapi.NewReplyKeyboard(
+				tgbotapi.NewKeyboardButtonRow(
+					tgbotapi.NewKeyboardButton("CryptoBot"),
+					tgbotapi.NewKeyboardButton("XRocket"),
+				),
+			)
+			msg := tgbotapi.NewMessage(m.Chat.ID, "Выберите провайдера оплаты")
+			msg.ReplyMarkup = kb
+			b.api.Send(msg)
+			return
+		}
+		provider := ""
+		if b.cfg.CryptoBotToken != "" {
+			provider = "crypto"
+		} else if b.cfg.XRocketToken != "" {
+			provider = "xrocket"
+		}
+		if provider == "" {
+			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Нет провайдера оплаты"))
+			delete(b.pendingTopup, userID)
+			return
+		}
+		if err := b.finishInvoice(userID, m.Chat.ID, st.amount, provider); err != nil {
+			log.Println("invoice:", err)
+			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Ошибка создания счёта"))
+			delete(b.pendingTopup, userID)
+			return
+		}
+	} else if st.step == 2 {
+		provider := strings.ToLower(strings.TrimSpace(m.Text))
+		if provider == "cryptobot" {
+			provider = "crypto"
+		} else if provider == "xrocket" {
+			provider = "xrocket"
+		} else {
+			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Неверный провайдер"))
+			return
+		}
+		if err := b.finishInvoice(userID, m.Chat.ID, st.amount, provider); err != nil {
+			log.Println("invoice:", err)
+			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Ошибка создания счёта"))
+			delete(b.pendingTopup, userID)
+			return
+		}
 	}
-	url, id, provider, err := b.createInvoice(amount)
+}
+
+func (b *Bot) finishInvoice(userID int64, chatID int64, amount float64, provider string) error {
+	url, id, prov, err := b.createInvoiceProvider(amount, provider)
 	if err != nil {
-		b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Ошибка создания счёта"))
-		delete(b.topupRequest, userID)
-		return
+		return err
 	}
 	kb := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Проверить оплату", "checkpay:"+id)),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("\xE2\x9C\x85 Проверить оплату", "checkpay:"+id)),
 	)
-	msg := tgbotapi.NewMessage(m.Chat.ID, "Оплатите: "+url)
+	msg := tgbotapi.NewMessage(chatID, "Оплатите: "+url)
 	msg.ReplyMarkup = kb
 	b.api.Send(msg)
-	b.pendingInvoices[id] = &invoiceState{userID: userID, amount: amount, provider: provider}
-	delete(b.topupRequest, userID)
+	b.pendingInvoices[id] = &invoiceState{userID: userID, amount: amount, provider: prov}
+	delete(b.pendingTopup, userID)
+	return nil
+}
+
+func (b *Bot) sendFileList(userID int64, chatID int64, page int) {
+	const pageSize = 8
+	files, err := b.db.ListFiles(userID)
+	if err != nil {
+		log.Println(err)
+		b.api.Send(tgbotapi.NewMessage(chatID, "Ошибка"))
+		return
+	}
+	if len(files) == 0 {
+		b.api.Send(tgbotapi.NewMessage(chatID, "Файлов нет"))
+		return
+	}
+	total := len(files)
+	if page*pageSize >= total {
+		page = 0
+	}
+	start := page * pageSize
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	var rows [][]tgbotapi.KeyboardButton
+	for _, f := range files[start:end] {
+		rows = append(rows, tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton(f.LocalName)))
+	}
+	nav := []tgbotapi.KeyboardButton{}
+	if start > 0 {
+		nav = append(nav, tgbotapi.NewKeyboardButton("⬅️"))
+	}
+	if end < total {
+		nav = append(nav, tgbotapi.NewKeyboardButton("➡️"))
+	}
+	if len(nav) > 0 {
+		rows = append(rows, nav)
+	}
+	rows = append(rows, tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("↩️ Назад")))
+	msg := tgbotapi.NewMessage(chatID, "Ваши файлы:")
+	msg.ReplyMarkup = tgbotapi.NewReplyKeyboard(rows...)
+	b.api.Send(msg)
 }
 
 func (b *Bot) handleAdminInput(userID int64, act string, m *tgbotapi.Message) {

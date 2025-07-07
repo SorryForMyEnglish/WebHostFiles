@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"github.com/example/filestoragebot/bot"
 	"github.com/example/filestoragebot/config"
@@ -10,9 +11,19 @@ import (
 )
 
 func main() {
+	created := false
+	if _, err := os.Stat("config.yml"); os.IsNotExist(err) {
+		created = true
+	}
+
 	cfg, err := config.Ensure("config.yml")
 	if err != nil {
 		log.Fatalf("config: %v", err)
+	}
+
+	if created {
+		log.Println("Default configuration generated at config.yml. Please edit it and restart.")
+		return
 	}
 
 	database, err := db.New(cfg.DatabasePath)
