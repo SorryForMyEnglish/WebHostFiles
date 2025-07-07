@@ -433,20 +433,29 @@ func (b *Bot) createXRocketInvoice(amount float64) (string, string, error) {
 		return "", "", fmt.Errorf("XRocket HTTP %d: %s", resp.StatusCode, string(data))
 	}
 	type res struct {
-		Ok     bool `json:"ok"`
-		Result struct {
+		Ok      bool `json:"ok"`
+		Success bool `json:"success"`
+		Result  struct {
 			ID  string `json:"id"`
 			URL string `json:"url"`
 		} `json:"result"`
+		Data struct {
+			ID   string `json:"id"`
+			Link string `json:"link"`
+		} `json:"data"`
 	}
 	var r res
 	if err := json.Unmarshal(data, &r); err != nil {
 		return "", "", fmt.Errorf("XRocket decode: %w", err)
 	}
-	if !r.Ok {
+	switch {
+	case r.Ok:
+		return r.Result.URL, r.Result.ID, nil
+	case r.Success:
+		return r.Data.Link, r.Data.ID, nil
+	default:
 		return "", "", fmt.Errorf("XRocket API error: %s", string(data))
 	}
-	return r.Result.URL, r.Result.ID, nil
 }
 
 func (b *Bot) checkInvoice(id, provider string) (bool, error) {
@@ -514,19 +523,27 @@ func (b *Bot) checkXRocketInvoice(id string) (bool, error) {
 		return false, fmt.Errorf("XRocket HTTP %d: %s", resp.StatusCode, string(data))
 	}
 	type res struct {
-		Ok     bool `json:"ok"`
-		Result struct {
+		Ok      bool `json:"ok"`
+		Success bool `json:"success"`
+		Result  struct {
 			Status string `json:"status"`
 		} `json:"result"`
+		Data struct {
+			Status string `json:"status"`
+		} `json:"data"`
 	}
 	var r res
 	if err := json.Unmarshal(data, &r); err != nil {
 		return false, fmt.Errorf("XRocket decode: %w", err)
 	}
-	if !r.Ok {
+	switch {
+	case r.Ok:
+		return r.Result.Status == "paid", nil
+	case r.Success:
+		return r.Data.Status == "paid", nil
+	default:
 		return false, fmt.Errorf("XRocket API error: %s", string(data))
 	}
-	return r.Result.Status == "paid", nil
 }
 
 func (b *Bot) handleCallback(q *tgbotapi.CallbackQuery) {
