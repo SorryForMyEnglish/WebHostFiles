@@ -374,8 +374,8 @@ func (b *Bot) createInvoiceProvider(amount float64, provider string) (string, st
 }
 
 func (b *Bot) createCryptoInvoice(amount float64) (string, string, error) {
-	body := fmt.Sprintf(`{"asset":"USDT","amount":"%.2f","description":"Account top-up"}`,
-		amount)
+	body := fmt.Sprintf(`{"asset":"USDT","amount":"%.2f","description":"Пополнение счёта на %.2f$"}`,
+		amount, amount)
 	req, err := http.NewRequest("POST", "https://pay.crypt.bot/api/createInvoice", strings.NewReader(body))
 	if err != nil {
 		return "", "", err
@@ -412,8 +412,8 @@ func (b *Bot) createCryptoInvoice(amount float64) (string, string, error) {
 }
 
 func (b *Bot) createXRocketInvoice(amount float64) (string, string, error) {
-	body := fmt.Sprintf(`{"amount":%.2f,"numPayments":1,"currency":"USDT","description":"Account top-up"}`,
-		amount)
+	body := fmt.Sprintf(`{"amount":%.2f,"numPayments":1,"currency":"USDT","description":"Пополнение счёта на %.2f$"}`,
+		amount, amount)
 	req, err := http.NewRequest("POST", "https://pay.xrocket.tg/tg-invoices", strings.NewReader(body))
 	if err != nil {
 		return "", "", err
@@ -429,7 +429,7 @@ func (b *Bot) createXRocketInvoice(amount float64) (string, string, error) {
 	if err != nil {
 		return "", "", fmt.Errorf("XRocket read: %w", err)
 	}
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return "", "", fmt.Errorf("XRocket HTTP %d: %s", resp.StatusCode, string(data))
 	}
 	type res struct {
@@ -578,6 +578,7 @@ func (b *Bot) handleCallback(q *tgbotapi.CallbackQuery) {
 			b.db.AddPayment(userID, state.amount)
 			delete(b.pendingInvoices, arg)
 			b.api.Send(tgbotapi.NewCallback(q.ID, "Оплачено"))
+			b.sendMainMenu(q.Message.Chat.ID, userID, q.From.ID == b.cfg.AdminID)
 		} else {
 			b.api.Send(tgbotapi.NewCallback(q.ID, "Не оплачено"))
 		}
@@ -778,6 +779,9 @@ func (b *Bot) finishInvoice(userID int64, chatID int64, amount float64, provider
 	if err != nil {
 		return err
 	}
+	rm := tgbotapi.NewMessage(chatID, " ")
+	rm.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
+	b.api.Send(rm)
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("\xE2\x9C\x85 Проверить оплату", "checkpay:"+id)),
 	)
