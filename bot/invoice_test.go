@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 
@@ -94,5 +95,28 @@ func TestCheckCryptoInvoicePaid(t *testing.T) {
 	}
 	if !paid {
 		t.Fatalf("expected invoice to be paid")
+	}
+}
+
+func TestXRocketDecodeSuccess(t *testing.T) {
+	data := []byte(`{"success":true,"data":{"id":"42","link":"https://t.me/xrocket?start=inv_test","status":"active"}}`)
+	var res struct {
+		Ok      bool `json:"ok"`
+		Success bool `json:"success"`
+		Result  struct {
+			ID  string `json:"id"`
+			URL string `json:"url"`
+		} `json:"result"`
+		Data struct {
+			ID     string `json:"id"`
+			Link   string `json:"link"`
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !res.Success || res.Data.ID != "42" || res.Data.Link == "" {
+		t.Fatalf("unexpected decode result: %+v", res)
 	}
 }
