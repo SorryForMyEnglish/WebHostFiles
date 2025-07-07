@@ -17,6 +17,7 @@ type Config struct {
 	HTTPAddress     string  `yaml:"http_address"`
 	TLSCert         string  `yaml:"tls_cert"`
 	TLSKey          string  `yaml:"tls_key"`
+	AdminID         int64   `yaml:"admin_id"`
 	PriceUpload     float64 `yaml:"price_upload"`
 	PriceRefund     float64 `yaml:"price_refund"`
 }
@@ -54,6 +55,7 @@ func Ensure(path string) (*Config, error) {
 			HTTPAddress:     ":8080",
 			TLSCert:         "",
 			TLSKey:          "",
+			AdminID:         0,
 			PriceUpload:     1.0,
 			PriceRefund:     0.5,
 		}
