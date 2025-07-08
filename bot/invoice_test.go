@@ -2,6 +2,8 @@ package bot
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 
@@ -118,5 +120,19 @@ func TestXRocketDecodeSuccess(t *testing.T) {
 	}
 	if !res.Success || res.Data.ID != "42" || res.Data.Link == "" {
 		t.Fatalf("unexpected decode result: %+v", res)
+	}
+}
+
+func TestCheckCryptoInvoiceError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "fail", http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+	old := cryptoAPIBase
+	cryptoAPIBase = ts.URL + "/"
+	defer func() { cryptoAPIBase = old }()
+	b := &Bot{cfg: &config.Config{CryptoBotToken: "t"}}
+	if _, err := b.checkCryptoInvoice("1"); err == nil {
+		t.Fatalf("expected error")
 	}
 }

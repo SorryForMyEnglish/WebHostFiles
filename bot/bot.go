@@ -156,11 +156,14 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 		if m.From.ID == b.cfg.AdminID {
 			kb := tgbotapi.NewInlineKeyboardMarkup(
 				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("Инфо о пользователе", "a_userinfo"),
-					tgbotapi.NewInlineKeyboardButtonData("Изменить баланс", "a_balance"),
+					tgbotapi.NewInlineKeyboardButtonData("\xE2\x84\xB9\xEF\xB8\x8F Инфо о пользователе", "a_userinfo"),
 				),
 				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("Список файлов", "a_files"),
+					tgbotapi.NewInlineKeyboardButtonData("\xE2\x9E\x95 Добавить баланс", "a_addbal"),
+					tgbotapi.NewInlineKeyboardButtonData("\xE2\x9C\x8F\xEF\xB8\x8F Установить баланс", "a_setbal"),
+				),
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("\xF0\x9F\x93\x82 Список файлов", "a_files"),
 				),
 			)
 			msg := tgbotapi.NewMessage(m.Chat.ID, "Админ панель")
@@ -289,7 +292,7 @@ func (b *Bot) handleUploadStep(userID int64, st *uploadState, m *tgbotapi.Messag
 		}
 		delete(b.pendingUploads, userID)
 		msg := tgbotapi.NewMessage(m.Chat.ID, "Готово")
-		msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
+		msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(false)
 		b.api.Send(msg)
 	}
 }
@@ -373,10 +376,13 @@ func (b *Bot) createInvoiceProvider(amount float64, provider string) (string, st
 	}
 }
 
+var cryptoAPIBase = "https://pay.crypt.bot/api/"
+var xrocketAPIBase = "https://pay.xrocket.tg/"
+
 func (b *Bot) createCryptoInvoice(amount float64) (string, string, error) {
 	body := fmt.Sprintf(`{"asset":"USDT","amount":"%.2f","description":"Пополнение счёта на %.2f$"}`,
 		amount, amount)
-	req, err := http.NewRequest("POST", "https://pay.crypt.bot/api/createInvoice", strings.NewReader(body))
+	req, err := http.NewRequest("POST", cryptoAPIBase+"createInvoice", strings.NewReader(body))
 	if err != nil {
 		return "", "", err
 	}
@@ -414,7 +420,7 @@ func (b *Bot) createCryptoInvoice(amount float64) (string, string, error) {
 func (b *Bot) createXRocketInvoice(amount float64) (string, string, error) {
 	body := fmt.Sprintf(`{"amount":%.2f,"numPayments":1,"currency":"USDT","description":"Пополнение счёта на %.2f$"}`,
 		amount, amount)
-	req, err := http.NewRequest("POST", "https://pay.xrocket.tg/tg-invoices", strings.NewReader(body))
+	req, err := http.NewRequest("POST", xrocketAPIBase+"tg-invoices", strings.NewReader(body))
 	if err != nil {
 		return "", "", err
 	}
@@ -469,7 +475,7 @@ func (b *Bot) checkInvoice(id, provider string) (bool, error) {
 }
 
 func (b *Bot) checkCryptoInvoice(id string) (bool, error) {
-	urlStr := "https://pay.crypt.bot/api/getInvoice?invoice_ids=" + id
+	urlStr := cryptoAPIBase + "getInvoice?invoice_ids=" + id
 	req, err := http.NewRequest("GET", urlStr, nil)
 	if err != nil {
 		return false, err
@@ -504,7 +510,7 @@ func (b *Bot) checkCryptoInvoice(id string) (bool, error) {
 }
 
 func (b *Bot) checkXRocketInvoice(id string) (bool, error) {
-	urlStr := "https://pay.xrocket.tg/tg-invoices/" + id
+	urlStr := xrocketAPIBase + "tg-invoices/" + id
 	req, err := http.NewRequest("GET", urlStr, nil)
 	if err != nil {
 		return false, err
@@ -587,6 +593,7 @@ func (b *Bot) handleCallback(q *tgbotapi.CallbackQuery) {
 		}
 		paid, err := b.checkInvoice(arg, state.provider)
 		if err != nil {
+			log.Println("check invoice:", err)
 			b.api.Send(tgbotapi.NewCallback(q.ID, "Ошибка"))
 			return
 		}
@@ -605,11 +612,14 @@ func (b *Bot) handleCallback(q *tgbotapi.CallbackQuery) {
 		}
 		kb := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Инфо о пользователе", "a_userinfo"),
-				tgbotapi.NewInlineKeyboardButtonData("Изменить баланс", "a_balance"),
+				tgbotapi.NewInlineKeyboardButtonData("\xE2\x84\xB9\xEF\xB8\x8F Инфо о пользователе", "a_userinfo"),
 			),
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Список файлов", "a_files"),
+				tgbotapi.NewInlineKeyboardButtonData("\xE2\x9E\x95 Добавить баланс", "a_addbal"),
+				tgbotapi.NewInlineKeyboardButtonData("\xE2\x9C\x8F\xEF\xB8\x8F Установить баланс", "a_setbal"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("\xF0\x9F\x93\x82 Список файлов", "a_files"),
 			),
 		)
 		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "Админ панель")
@@ -623,12 +633,20 @@ func (b *Bot) handleCallback(q *tgbotapi.CallbackQuery) {
 		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "Введите telegram id")
 		msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
 		b.api.Send(msg)
-	case "a_balance":
+	case "a_addbal":
 		if q.From.ID != b.cfg.AdminID {
 			return
 		}
-		b.adminAction[userID] = "balance"
+		b.adminAction[userID] = "addbal"
 		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "Введите telegram id и сумму через пробел")
+		msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
+		b.api.Send(msg)
+	case "a_setbal":
+		if q.From.ID != b.cfg.AdminID {
+			return
+		}
+		b.adminAction[userID] = "setbal"
+		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "Введите telegram id и новый баланс")
 		msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
 		b.api.Send(msg)
 	case "a_files":
@@ -797,7 +815,7 @@ func (b *Bot) finishInvoice(userID int64, chatID int64, amount float64, provider
 		return err
 	}
 	rm := tgbotapi.NewMessage(chatID, " ")
-	rm.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
+	rm.ReplyMarkup = tgbotapi.NewRemoveKeyboard(false)
 	b.api.Send(rm)
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("\xE2\x9C\x85 Проверить оплату", "checkpay:"+id)),
@@ -864,7 +882,7 @@ func (b *Bot) handleAdminInput(userID int64, act string, m *tgbotapi.Message) {
 		} else {
 			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, fmt.Sprintf("ID: %d\nБаланс: %.2f", id, bal)))
 		}
-	case "balance":
+	case "addbal":
 		var tg int64
 		var delta float64
 		fmt.Sscanf(m.Text, "%d %f", &tg, &delta)
@@ -875,6 +893,18 @@ func (b *Bot) handleAdminInput(userID int64, act string, m *tgbotapi.Message) {
 		} else {
 			b.db.AdjustBalance(id, delta)
 			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Баланс изменён"))
+		}
+	case "setbal":
+		var tg int64
+		var val float64
+		fmt.Sscanf(m.Text, "%d %f", &tg, &val)
+		row := b.db.QueryRow("SELECT id FROM users WHERE telegram_id=?", tg)
+		var id int64
+		if err := row.Scan(&id); err != nil {
+			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Пользователь не найден"))
+		} else {
+			b.db.SetBalance(id, val)
+			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Баланс установлен"))
 		}
 	}
 	delete(b.adminAction, userID)
