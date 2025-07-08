@@ -14,14 +14,16 @@ import (
 
 	"github.com/example/filestoragebot/config"
 	"github.com/example/filestoragebot/db"
+	"github.com/example/filestoragebot/logdb"
 	"github.com/example/filestoragebot/models"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 type Bot struct {
-	api *tgbotapi.BotAPI
-	cfg *config.Config
-	db  *db.DB
+	api  *tgbotapi.BotAPI
+	cfg  *config.Config
+	db   *db.DB
+	logs *logdb.DB
 
 	pendingUploads  map[int64]*uploadState
 	changeLink      map[int64]string
@@ -67,7 +69,7 @@ func (b *Bot) Notify(userID int64, message string) error {
 	return err
 }
 
-func New(cfg *config.Config, db *db.DB) (*Bot, error) {
+func New(cfg *config.Config, db *db.DB, logs *logdb.DB) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(cfg.TelegramToken)
 	if err != nil {
 		return nil, err
@@ -76,6 +78,7 @@ func New(cfg *config.Config, db *db.DB) (*Bot, error) {
 		api:             api,
 		cfg:             cfg,
 		db:              db,
+		logs:            logs,
 		pendingUploads:  make(map[int64]*uploadState),
 		changeLink:      make(map[int64]string),
 		pendingInvoices: make(map[string]*invoiceState),
@@ -223,11 +226,16 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 	}
 
 	if f, err := b.db.GetFileByLocalName(userID, m.Text); err == nil {
+		notif := "🔔❌"
+		if f.Notify {
+			notif = "🔔✅"
+		}
 		kb := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("🔗 Сменить ссылку", "link:"+f.StorageName),
-				tgbotapi.NewInlineKeyboardButtonData("🔔 Уведомления", "notify:"+f.StorageName),
-				tgbotapi.NewInlineKeyboardButtonData("❌ Удалить", "delete:"+f.StorageName),
+				tgbotapi.NewInlineKeyboardButtonData("🔗", "link:"+f.StorageName),
+				tgbotapi.NewInlineKeyboardButtonData(notif, "notify:"+f.StorageName),
+				tgbotapi.NewInlineKeyboardButtonData("📄", "log:"+f.StorageName),
+				tgbotapi.NewInlineKeyboardButtonData("❌", "delete:"+f.StorageName),
 			),
 		)
 		b.deleteLast(userID, m.Chat.ID)
@@ -717,16 +725,37 @@ func (b *Bot) handleCallback(q *tgbotapi.CallbackQuery) {
 		if err != nil || f.UserID != userID {
 			return
 		}
+		notif := "🔔❌"
+		if f.Notify {
+			notif = "🔔✅"
+		}
 		kb := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Сменить ссылку", "link:"+arg),
-				tgbotapi.NewInlineKeyboardButtonData("Уведомления", "notify:"+arg),
-				tgbotapi.NewInlineKeyboardButtonData("Удалить", "delete:"+arg),
+				tgbotapi.NewInlineKeyboardButtonData("🔗", "link:"+arg),
+				tgbotapi.NewInlineKeyboardButtonData(notif, "notify:"+arg),
+				tgbotapi.NewInlineKeyboardButtonData("📄", "log:"+arg),
+				tgbotapi.NewInlineKeyboardButtonData("❌", "delete:"+arg),
 			),
 		)
 		msg := tgbotapi.NewMessage(q.Message.Chat.ID, f.LocalName+" -> "+f.Link)
 		msg.ReplyMarkup = kb
 		b.api.Send(msg)
+	case "log":
+		f, err := b.db.GetFileByStorageName(arg)
+		if err != nil || f.UserID != userID {
+			return
+		}
+		entries, err := b.logs.List(f.ID)
+		if err != nil {
+			return
+		}
+		html := buildLogHTML(f, entries)
+		tmp := fmt.Sprintf("log_%d.html", f.ID)
+		os.WriteFile(tmp, []byte(html), 0644)
+		doc := tgbotapi.NewDocument(q.Message.Chat.ID, tgbotapi.FilePath(tmp))
+		doc.Caption = "Лог скачиваний"
+		b.api.Send(doc)
+		os.Remove(tmp)
 	case "notify":
 		f, err := b.db.GetFileByStorageName(arg)
 		if err == nil && f.UserID == userID {
@@ -745,6 +774,7 @@ func (b *Bot) handleCallback(q *tgbotapi.CallbackQuery) {
 		if err == nil && f.UserID == userID {
 			os.Remove(filepath.Join(b.cfg.FileStoragePath, f.StorageName))
 			b.db.DeleteFile(f.ID)
+			b.logs.Drop(f.ID)
 			b.db.AdjustBalance(userID, b.cfg.PriceRefund)
 			b.api.Send(tgbotapi.NewCallback(q.ID, "Удалено"))
 		}
@@ -1053,4 +1083,28 @@ func (b *Bot) checkTokens() {
 			}
 		}
 	}
+}
+
+func buildLogHTML(f *models.File, entries []logdb.Entry) string {
+	var sb strings.Builder
+	sb.WriteString(`<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Log</title><style>body{background:#111;color:#eee;font-family:sans-serif;padding:20px}table{width:100%;border-collapse:collapse}th,td{padding:8px;border:1px solid #444}th{background:#222}</style></head><body>`)
+	sb.WriteString(fmt.Sprintf("<h2>%s</h2>", f.LocalName))
+	sb.WriteString(fmt.Sprintf("<p>Ссылка: %s</p>", f.Link))
+	sb.WriteString(fmt.Sprintf("<p>Количество скачиваний: %d</p>", len(entries)))
+	sb.WriteString("<table><tr><th>#</th><th>IP</th><th>Страна</th><th>Город</th><th>Платформа</th><th>Модель</th><th>ОС</th><th>Браузер</th><th>Дата</th></tr>")
+	for i, e := range entries {
+		sb.WriteString("<tr>")
+		sb.WriteString(fmt.Sprintf("<td>%d</td>", i+1))
+		sb.WriteString(fmt.Sprintf("<td>%s</td>", e.IP))
+		sb.WriteString(fmt.Sprintf("<td>%s</td>", e.Country))
+		sb.WriteString(fmt.Sprintf("<td>%s</td>", e.City))
+		sb.WriteString(fmt.Sprintf("<td>%s</td>", e.Platform))
+		sb.WriteString(fmt.Sprintf("<td>%s</td>", e.Model))
+		sb.WriteString(fmt.Sprintf("<td>%s %s</td>", e.OSName, e.OSVersion))
+		sb.WriteString(fmt.Sprintf("<td>%s %s</td>", e.BrowserName, e.BrowserVer))
+		sb.WriteString(fmt.Sprintf("<td>%s</td>", e.CreatedAt))
+		sb.WriteString("</tr>")
+	}
+	sb.WriteString("</table></body></html>")
+	return sb.String()
 }

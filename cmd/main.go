@@ -7,6 +7,7 @@ import (
 	"github.com/example/filestoragebot/bot"
 	"github.com/example/filestoragebot/config"
 	"github.com/example/filestoragebot/db"
+	"github.com/example/filestoragebot/logdb"
 	"github.com/example/filestoragebot/server"
 )
 
@@ -31,13 +32,18 @@ func main() {
 		log.Fatalf("database: %v", err)
 	}
 
-	b, err := bot.New(cfg, database)
+	logs, err := logdb.New(cfg.LogsDatabasePath)
+	if err != nil {
+		log.Fatalf("logs database: %v", err)
+	}
+
+	b, err := bot.New(cfg, database, logs)
 	if err != nil {
 		log.Fatalf("bot: %v", err)
 	}
 
 	go func() {
-		if err := server.Start(cfg, database, func(id int64, msg string) {
+		if err := server.Start(cfg, database, logs, func(id int64, msg string) {
 			_ = b.Notify(id, msg)
 		}); err != nil {
 			log.Fatalf("server: %v", err)
