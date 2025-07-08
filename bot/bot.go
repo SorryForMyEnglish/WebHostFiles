@@ -123,6 +123,13 @@ func (b *Bot) sendTemp(chatID, userID int64, msg tgbotapi.MessageConfig) {
 	m, err := b.api.Send(msg)
 	if err == nil {
 		b.lastMessage[userID] = m.MessageID
+		go func(c int64, id int, u int64) {
+			time.Sleep(20 * time.Second)
+			if mid, ok := b.lastMessage[u]; ok && mid == id {
+				b.deleteMessage(c, id)
+				delete(b.lastMessage, u)
+			}
+		}(chatID, m.MessageID, userID)
 	}
 }
 
@@ -186,17 +193,67 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 		if m.From.ID == b.cfg.AdminID {
 			b.deleteLast(userID, m.Chat.ID)
 			b.deleteMessage(m.Chat.ID, m.MessageID)
-			kb := tgbotapi.NewReplyKeyboard(
-				tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("\xE2\x84\xB9\xEF\xB8\x8F Инфо о пользователе")),
-				tgbotapi.NewKeyboardButtonRow(
-					tgbotapi.NewKeyboardButton("\xE2\x9E\x95 Добавить баланс"),
-					tgbotapi.NewKeyboardButton("\xE2\x9C\x8F\xEF\xB8\x8F Установить баланс"),
-				),
-				tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("\xF0\x9F\x93\x82 Список файлов")),
+			b.sendAdminPanel(m.Chat.ID, userID)
+		}
+		return
+	case "\xE2\x84\xB9\xEF\xB8\x8F Инфо о пользователе":
+		if m.From.ID == b.cfg.AdminID {
+			b.deleteLast(userID, m.Chat.ID)
+			b.deleteMessage(m.Chat.ID, m.MessageID)
+			b.adminAction[userID] = "userinfo"
+			msg := tgbotapi.NewMessage(m.Chat.ID, "Введите telegram id")
+			msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
+			b.sendTemp(m.Chat.ID, userID, msg)
+		}
+		return
+	case "\xE2\x9E\x95 Добавить баланс":
+		if m.From.ID == b.cfg.AdminID {
+			b.deleteLast(userID, m.Chat.ID)
+			b.deleteMessage(m.Chat.ID, m.MessageID)
+			b.adminAction[userID] = "addbal"
+			msg := tgbotapi.NewMessage(m.Chat.ID, "Введите telegram id и сумму через пробел")
+			msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
+			b.sendTemp(m.Chat.ID, userID, msg)
+		}
+		return
+	case "\xE2\x9C\x8F\xEF\xB8\x8F Установить баланс":
+		if m.From.ID == b.cfg.AdminID {
+			b.deleteLast(userID, m.Chat.ID)
+			b.deleteMessage(m.Chat.ID, m.MessageID)
+			b.adminAction[userID] = "setbal"
+			msg := tgbotapi.NewMessage(m.Chat.ID, "Введите telegram id и новый баланс")
+			msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
+			b.sendTemp(m.Chat.ID, userID, msg)
+		}
+		return
+	case "\xF0\x9F\x93\x82 Список файлов":
+		if m.From.ID == b.cfg.AdminID {
+			b.deleteLast(userID, m.Chat.ID)
+			b.deleteMessage(m.Chat.ID, m.MessageID)
+			files, err := b.db.ListAllFiles()
+			if err != nil || len(files) == 0 {
+				tmp, err := b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Файлов нет"))
+				if err == nil {
+					go func(cid int64, id int) {
+						time.Sleep(20 * time.Second)
+						b.deleteMessage(cid, id)
+					}(m.Chat.ID, tmp.MessageID)
+				}
+				b.sendAdminPanel(m.Chat.ID, userID)
+				return
+			}
+			var sb strings.Builder
+			for _, f := range files {
+				notif := "выкл"
+				if f.Notify {
+					notif = "вкл"
+				}
+				sb.WriteString(fmt.Sprintf("%s | %s | %s\n", f.CreatedAt, notif, f.Link))
+			}
+			msg := tgbotapi.NewMessage(m.Chat.ID, sb.String())
+			msg.ReplyMarkup = tgbotapi.NewReplyKeyboard(
 				tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("↩️ Назад")),
 			)
-			msg := tgbotapi.NewMessage(m.Chat.ID, "Админ панель")
-			msg.ReplyMarkup = kb
 			b.sendTemp(m.Chat.ID, userID, msg)
 		}
 		return
@@ -618,26 +675,6 @@ func (b *Bot) handleCallback(q *tgbotapi.CallbackQuery) {
 		return
 	}
 	switch action {
-	case "myfiles":
-		files, err := b.db.ListFiles(userID)
-		if err != nil || len(files) == 0 {
-			b.api.Send(tgbotapi.NewCallback(q.ID, "Файлов нет"))
-			return
-		}
-		var rows [][]tgbotapi.InlineKeyboardButton
-		for _, f := range files {
-			btn := tgbotapi.NewInlineKeyboardButtonData(f.LocalName, "manage:"+f.StorageName)
-			rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn))
-		}
-		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "Ваши файлы")
-		msg.ReplyMarkup = &kb
-		b.api.Send(msg)
-	case "topup":
-		b.pendingTopup[userID] = &topupState{step: 1}
-		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "\xF0\x9F\x92\xB0 Введите сумму")
-		msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
-		b.sendTemp(q.Message.Chat.ID, userID, msg)
 	case "checkpay":
 		state, ok := b.pendingInvoices[arg]
 		if !ok || state.userID != userID {
@@ -659,67 +696,6 @@ func (b *Bot) handleCallback(q *tgbotapi.CallbackQuery) {
 		} else {
 			b.api.Send(tgbotapi.NewCallback(q.ID, "Не оплачено"))
 		}
-	case "admin":
-		if q.From.ID != b.cfg.AdminID {
-			return
-		}
-		kb := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("\xE2\x84\xB9\xEF\xB8\x8F Инфо о пользователе", "a_userinfo"),
-			),
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("\xE2\x9E\x95 Добавить баланс", "a_addbal"),
-				tgbotapi.NewInlineKeyboardButtonData("\xE2\x9C\x8F\xEF\xB8\x8F Установить баланс", "a_setbal"),
-			),
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("\xF0\x9F\x93\x82 Список файлов", "a_files"),
-			),
-		)
-		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "Админ панель")
-		msg.ReplyMarkup = kb
-		b.api.Send(msg)
-	case "a_userinfo":
-		if q.From.ID != b.cfg.AdminID {
-			return
-		}
-		b.adminAction[userID] = "userinfo"
-		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "Введите telegram id")
-		msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
-		b.api.Send(msg)
-	case "a_addbal":
-		if q.From.ID != b.cfg.AdminID {
-			return
-		}
-		b.adminAction[userID] = "addbal"
-		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "Введите telegram id и сумму через пробел")
-		msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
-		b.api.Send(msg)
-	case "a_setbal":
-		if q.From.ID != b.cfg.AdminID {
-			return
-		}
-		b.adminAction[userID] = "setbal"
-		msg := tgbotapi.NewMessage(q.Message.Chat.ID, "Введите telegram id и новый баланс")
-		msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
-		b.api.Send(msg)
-	case "a_files":
-		if q.From.ID != b.cfg.AdminID {
-			return
-		}
-		files, err := b.db.ListAllFiles()
-		if err != nil || len(files) == 0 {
-			b.api.Send(tgbotapi.NewMessage(q.Message.Chat.ID, "Файлов нет"))
-			return
-		}
-		var sb strings.Builder
-		for _, f := range files {
-			notif := "выкл"
-			if f.Notify {
-				notif = "вкл"
-			}
-			sb.WriteString(fmt.Sprintf("%s | %s | %s\n", f.CreatedAt, notif, f.Link))
-		}
-		b.api.Send(tgbotapi.NewMessage(q.Message.Chat.ID, sb.String()))
 	case "manage":
 		f, err := b.db.GetFileByStorageName(arg)
 		if err != nil || f.UserID != userID {
@@ -829,6 +805,21 @@ func (b *Bot) sendMainMenu(chatID, userID int64, isAdmin bool) {
 	txt = strings.ReplaceAll(txt, "%%price%%", fmt.Sprintf("%.2f", b.cfg.PriceUpload))
 	txt = strings.ReplaceAll(txt, "%%refund%%", fmt.Sprintf("%.2f", b.cfg.PriceRefund))
 	msg := tgbotapi.NewMessage(chatID, txt)
+	msg.ReplyMarkup = kb
+	b.sendTemp(chatID, userID, msg)
+}
+
+func (b *Bot) sendAdminPanel(chatID, userID int64) {
+	kb := tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("\xE2\x84\xB9\xEF\xB8\x8F Инфо о пользователе")),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("\xE2\x9E\x95 Добавить баланс"),
+			tgbotapi.NewKeyboardButton("\xE2\x9C\x8F\xEF\xB8\x8F Установить баланс"),
+		),
+		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("\xF0\x9F\x93\x82 Список файлов")),
+		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("↩️ Назад")),
+	)
+	msg := tgbotapi.NewMessage(chatID, "Админ панель")
 	msg.ReplyMarkup = kb
 	b.sendTemp(chatID, userID, msg)
 }
