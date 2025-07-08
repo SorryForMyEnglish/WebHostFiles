@@ -80,6 +80,11 @@ func (db *DB) AdjustBalance(userID int64, delta float64) error {
 	return err
 }
 
+func (db *DB) SetBalance(userID int64, value float64) error {
+	_, err := db.Exec("UPDATE users SET balance = ? WHERE id=?", value, userID)
+	return err
+}
+
 func (db *DB) GetBalance(userID int64) (float64, error) {
 	var b float64
 	err := db.QueryRow("SELECT balance FROM users WHERE id=?", userID).Scan(&b)
