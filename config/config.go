@@ -22,6 +22,7 @@ type Config struct {
 	AdminID         int64   `yaml:"admin_id"`
 	PriceUpload     float64 `yaml:"price_upload"`
 	PriceRefund     float64 `yaml:"price_refund"`
+	MenuText        string  `yaml:"menu_text"`
 }
 
 func Load(path string) (*Config, error) {
@@ -62,6 +63,7 @@ func Ensure(path string) (*Config, error) {
 			AdminID:         0,
 			PriceUpload:     1.0,
 			PriceRefund:     0.5,
+			MenuText:        "\xF0\x9F\x92\xB0 Ваш баланс: %%bal%%\n\xF0\x9F\x93\x84 Загрузка: %%price%% USDT\n\xE2\x9E\x95 Возврат за удаление: %%refund%% USDT\nВыберите действие:",
 		}
 		if err := cfg.Save(path); err != nil {
 			return nil, err
