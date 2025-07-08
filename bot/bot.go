@@ -950,8 +950,14 @@ func (b *Bot) sendFileList(userID int64, chatID int64, page int) {
 		return
 	}
 	if len(files) == 0 {
-		msg := tgbotapi.NewMessage(chatID, "Файлов нет")
-		b.sendTemp(chatID, userID, msg)
+		tmp, err := b.api.Send(tgbotapi.NewMessage(chatID, "Файлов нет"))
+		if err == nil {
+			go func(cid int64, id int) {
+				time.Sleep(20 * time.Second)
+				b.deleteMessage(cid, id)
+			}(chatID, tmp.MessageID)
+		}
+		b.sendMainMenu(chatID, userID, false)
 		return
 	}
 	total := len(files)
@@ -985,6 +991,7 @@ func (b *Bot) sendFileList(userID int64, chatID int64, page int) {
 
 func (b *Bot) handleAdminInput(userID int64, act string, m *tgbotapi.Message) {
 	b.deleteMessage(m.Chat.ID, m.MessageID)
+	var resp tgbotapi.MessageConfig
 	switch act {
 	case "userinfo":
 		var tg int64
@@ -993,11 +1000,9 @@ func (b *Bot) handleAdminInput(userID int64, act string, m *tgbotapi.Message) {
 		var id int64
 		var bal float64
 		if err := row.Scan(&id, &bal); err != nil {
-			msg := tgbotapi.NewMessage(m.Chat.ID, "Пользователь не найден")
-			b.sendTemp(m.Chat.ID, userID, msg)
+			resp = tgbotapi.NewMessage(m.Chat.ID, "Пользователь не найден")
 		} else {
-			msg := tgbotapi.NewMessage(m.Chat.ID, fmt.Sprintf("ID: %d\nБаланс: %.2f", id, bal))
-			b.sendTemp(m.Chat.ID, userID, msg)
+			resp = tgbotapi.NewMessage(m.Chat.ID, fmt.Sprintf("ID: %d\nБаланс: %.2f", id, bal))
 		}
 	case "addbal":
 		var tg int64
@@ -1006,12 +1011,10 @@ func (b *Bot) handleAdminInput(userID int64, act string, m *tgbotapi.Message) {
 		row := b.db.QueryRow("SELECT id FROM users WHERE telegram_id=?", tg)
 		var id int64
 		if err := row.Scan(&id); err != nil {
-			msg := tgbotapi.NewMessage(m.Chat.ID, "Пользователь не найден")
-			b.sendTemp(m.Chat.ID, userID, msg)
+			resp = tgbotapi.NewMessage(m.Chat.ID, "Пользователь не найден")
 		} else {
 			b.db.AdjustBalance(id, delta)
-			msg := tgbotapi.NewMessage(m.Chat.ID, "Баланс изменён")
-			b.sendTemp(m.Chat.ID, userID, msg)
+			resp = tgbotapi.NewMessage(m.Chat.ID, "Баланс изменён")
 		}
 	case "setbal":
 		var tg int64
@@ -1020,14 +1023,22 @@ func (b *Bot) handleAdminInput(userID int64, act string, m *tgbotapi.Message) {
 		row := b.db.QueryRow("SELECT id FROM users WHERE telegram_id=?", tg)
 		var id int64
 		if err := row.Scan(&id); err != nil {
-			msg := tgbotapi.NewMessage(m.Chat.ID, "Пользователь не найден")
-			b.sendTemp(m.Chat.ID, userID, msg)
+			resp = tgbotapi.NewMessage(m.Chat.ID, "Пользователь не найден")
 		} else {
 			b.db.SetBalance(id, val)
-			msg := tgbotapi.NewMessage(m.Chat.ID, "Баланс установлен")
-			b.sendTemp(m.Chat.ID, userID, msg)
+			resp = tgbotapi.NewMessage(m.Chat.ID, "Баланс установлен")
 		}
 	}
+	if resp.Text != "" {
+		tmp, err := b.api.Send(resp)
+		if err == nil {
+			go func(cid int64, id int) {
+				time.Sleep(20 * time.Second)
+				b.deleteMessage(cid, id)
+			}(m.Chat.ID, tmp.MessageID)
+		}
+	}
+	b.sendAdminPanel(m.Chat.ID, userID)
 	delete(b.adminAction, userID)
 }
 
@@ -1083,6 +1094,7 @@ func buildLogHTML(f *models.File, entries []logdb.Entry) string {
 	sb.WriteString(fmt.Sprintf("<p>Ссылка: %s</p>", f.Link))
 	sb.WriteString(fmt.Sprintf("<p>Количество скачиваний: %d</p>", len(entries)))
 	sb.WriteString("<table><tr><th>#</th><th>IP</th><th>Страна</th><th>Город</th><th>Платформа</th><th>Модель</th><th>ОС</th><th>Браузер</th><th>Дата</th></tr>")
+	loc, _ := time.LoadLocation("Europe/Moscow")
 	for i, e := range entries {
 		sb.WriteString("<tr>")
 		sb.WriteString(fmt.Sprintf("<td>%d</td>", i+1))
@@ -1093,7 +1105,13 @@ func buildLogHTML(f *models.File, entries []logdb.Entry) string {
 		sb.WriteString(fmt.Sprintf("<td>%s</td>", e.Model))
 		sb.WriteString(fmt.Sprintf("<td>%s %s</td>", e.OSName, e.OSVersion))
 		sb.WriteString(fmt.Sprintf("<td>%s %s</td>", e.BrowserName, e.BrowserVer))
-		sb.WriteString(fmt.Sprintf("<td>%s</td>", e.CreatedAt))
+		ts := e.CreatedAt
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			ts = t.In(loc).Format("02.01.2006 15:04:05")
+		} else if t, err := time.Parse("2006-01-02 15:04:05", ts); err == nil {
+			ts = t.In(loc).Format("02.01.2006 15:04:05")
+		}
+		sb.WriteString(fmt.Sprintf("<td>%s</td>", ts))
 		sb.WriteString("</tr>")
 	}
 	sb.WriteString("</table></body></html>")
