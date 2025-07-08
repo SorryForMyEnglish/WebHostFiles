@@ -10,6 +10,8 @@ type Config struct {
 	TelegramToken   string  `yaml:"telegram_token"`
 	CryptoBotToken  string  `yaml:"cryptobot_token"`
 	XRocketToken    string  `yaml:"xrocket_token"`
+	CryptoMinTopup  float64 `yaml:"cryptobot_min_topup"`
+	XRocketMinTopup float64 `yaml:"xrocket_min_topup"`
 	DatabasePath    string  `yaml:"database_path"`
 	FileStoragePath string  `yaml:"file_storage_path"`
 	MaxFileSize     int64   `yaml:"max_file_size"`
@@ -48,6 +50,8 @@ func Ensure(path string) (*Config, error) {
 			TelegramToken:   "",
 			CryptoBotToken:  "",
 			XRocketToken:    "",
+			CryptoMinTopup:  0.1,
+			XRocketMinTopup: 0.1,
 			DatabasePath:    "filestorage.db",
 			FileStoragePath: "files",
 			MaxFileSize:     100 * 1024 * 1024,

@@ -91,12 +91,27 @@ func TestCheckCryptoInvoicePaid(t *testing.T) {
 		t.Skip("no token")
 	}
 	b := &Bot{cfg: &config.Config{CryptoBotToken: token}}
-	paid, err := b.checkCryptoInvoice("29102258")
+	paid, err := b.checkCryptoInvoice("29143188")
 	if err != nil {
 		t.Fatalf("checkCryptoInvoice: %v", err)
 	}
 	if !paid {
 		t.Fatalf("expected invoice to be paid")
+	}
+}
+
+func TestCheckCryptoInvoiceUnpaid(t *testing.T) {
+	token := os.Getenv("CRYPTOBOT_TOKEN")
+	if token == "" {
+		t.Skip("no token")
+	}
+	b := &Bot{cfg: &config.Config{CryptoBotToken: token}}
+	paid, err := b.checkCryptoInvoice("29104962")
+	if err != nil {
+		t.Fatalf("checkCryptoInvoice: %v", err)
+	}
+	if paid {
+		t.Fatalf("expected invoice to be unpaid")
 	}
 }
 
@@ -124,7 +139,9 @@ func TestXRocketDecodeSuccess(t *testing.T) {
 }
 
 func TestCheckCryptoInvoiceError(t *testing.T) {
+	var method string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
 		http.Error(w, "fail", http.StatusInternalServerError)
 	}))
 	defer ts.Close()
@@ -134,5 +151,8 @@ func TestCheckCryptoInvoiceError(t *testing.T) {
 	b := &Bot{cfg: &config.Config{CryptoBotToken: "t"}}
 	if _, err := b.checkCryptoInvoice("1"); err == nil {
 		t.Fatalf("expected error")
+	}
+	if method != http.MethodPost {
+		t.Fatalf("expected POST request, got %s", method)
 	}
 }
