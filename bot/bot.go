@@ -475,11 +475,13 @@ func (b *Bot) checkInvoice(id, provider string) (bool, error) {
 }
 
 func (b *Bot) checkCryptoInvoice(id string) (bool, error) {
-	urlStr := cryptoAPIBase + "getInvoice?invoice_ids=" + id
-	req, err := http.NewRequest("GET", urlStr, nil)
+	urlStr := cryptoAPIBase + "getInvoices"
+	body := fmt.Sprintf(`{"invoice_ids":[%s]}`, id)
+	req, err := http.NewRequest("POST", urlStr, strings.NewReader(body))
 	if err != nil {
 		return false, err
 	}
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Crypto-Pay-API-Token", b.cfg.CryptoBotToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -495,18 +497,20 @@ func (b *Bot) checkCryptoInvoice(id string) (bool, error) {
 	}
 	type res struct {
 		Ok     bool `json:"ok"`
-		Result []struct {
-			Status string `json:"status"`
+		Result struct {
+			Items []struct {
+				Status string `json:"status"`
+			} `json:"items"`
 		} `json:"result"`
 	}
 	var r res
 	if err := json.Unmarshal(data, &r); err != nil {
 		return false, fmt.Errorf("CryptoBot decode: %w", err)
 	}
-	if !r.Ok || len(r.Result) == 0 {
+	if !r.Ok || len(r.Result.Items) == 0 {
 		return false, fmt.Errorf("CryptoBot API error: %s", string(data))
 	}
-	return r.Result[0].Status == "paid", nil
+	return r.Result.Items[0].Status == "paid", nil
 }
 
 func (b *Bot) checkXRocketInvoice(id string) (bool, error) {
@@ -754,8 +758,12 @@ func (b *Bot) processTopup(userID int64, m *tgbotapi.Message, st *topupState) {
 		amountStr := strings.TrimSpace(m.Text)
 		var amount float64
 		fmt.Sscanf(amountStr, "%f", &amount)
-		if amount <= 0 {
-			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Неверная сумма"))
+		if amount <= 0 || amount > 10000 {
+			if amount > 10000 {
+				b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Максимальная сумма 10000"))
+			} else {
+				b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Неверная сумма"))
+			}
 			delete(b.pendingTopup, userID)
 			return
 		}
@@ -784,6 +792,16 @@ func (b *Bot) processTopup(userID int64, m *tgbotapi.Message, st *topupState) {
 			delete(b.pendingTopup, userID)
 			return
 		}
+		if (provider == "crypto" && st.amount < b.cfg.CryptoMinTopup && b.cfg.CryptoMinTopup > 0) ||
+			(provider == "xrocket" && st.amount < b.cfg.XRocketMinTopup && b.cfg.XRocketMinTopup > 0) {
+			min := b.cfg.CryptoMinTopup
+			if provider == "xrocket" {
+				min = b.cfg.XRocketMinTopup
+			}
+			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, fmt.Sprintf("Минимальная сумма %.2f", min)))
+			delete(b.pendingTopup, userID)
+			return
+		}
 		if err := b.finishInvoice(userID, m.Chat.ID, st.amount, provider); err != nil {
 			log.Println("invoice:", err)
 			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Ошибка создания счёта"))
@@ -800,6 +818,16 @@ func (b *Bot) processTopup(userID int64, m *tgbotapi.Message, st *topupState) {
 			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Неверный провайдер"))
 			return
 		}
+		if (provider == "crypto" && st.amount < b.cfg.CryptoMinTopup && b.cfg.CryptoMinTopup > 0) ||
+			(provider == "xrocket" && st.amount < b.cfg.XRocketMinTopup && b.cfg.XRocketMinTopup > 0) {
+			min := b.cfg.CryptoMinTopup
+			if provider == "xrocket" {
+				min = b.cfg.XRocketMinTopup
+			}
+			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, fmt.Sprintf("Минимальная сумма %.2f", min)))
+			delete(b.pendingTopup, userID)
+			return
+		}
 		if err := b.finishInvoice(userID, m.Chat.ID, st.amount, provider); err != nil {
 			log.Println("invoice:", err)
 			b.api.Send(tgbotapi.NewMessage(m.Chat.ID, "Ошибка создания счёта"))
@@ -810,6 +838,9 @@ func (b *Bot) processTopup(userID int64, m *tgbotapi.Message, st *topupState) {
 }
 
 func (b *Bot) finishInvoice(userID int64, chatID int64, amount float64, provider string) error {
+	if amount > 10000 {
+		return fmt.Errorf("amount limit")
+	}
 	url, id, prov, err := b.createInvoiceProvider(amount, provider)
 	if err != nil {
 		return err
