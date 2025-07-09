@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 
@@ -9,9 +10,13 @@ import (
 	"github.com/example/filestoragebot/db"
 	"github.com/example/filestoragebot/logdb"
 	"github.com/example/filestoragebot/server"
+	"github.com/example/filestoragebot/version"
 )
 
 func main() {
+	banner := fmt.Sprintf("\n\x1b[34m*******************************\n*  FileStorage Bot v%s  *\n*******************************\x1b[0m\n", version.Version)
+	fmt.Print(banner)
+
 	created := false
 	if _, err := os.Stat("config.yml"); os.IsNotExist(err) {
 		created = true
